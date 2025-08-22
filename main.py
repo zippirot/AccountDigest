@@ -1,3 +1,5 @@
+'''
+
 import os
 import uuid
 import json
@@ -110,3 +112,5 @@ def get_result(job_id: str):
 
 # 6. Static Files (Serves the web/index.html file)
 app.mount("/", StaticFiles(directory="web", html=True), name="web")
+
+'''
