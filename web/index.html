@@ -1,112 +1,128 @@
-import os
-import uuid
-import json
-import fitz
-import requests
-from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Account Digest</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" />
+    <style>
+        body { padding: 2rem; }
+        #dropzone { border: 2px dashed #ccc; padding: 2rem; text-align: center; cursor: pointer; }
+        .severity-high { background-color: #d9534f; color: white; padding: 0.2em 0.6em; border-radius: 0.25em; }
+        .severity-medium { background-color: #f0ad4e; color: white; padding: 0.2em 0.6em; border-radius: 0.25em; }
+        .severity-low { background-color: #5cb85c; color: white; padding: 0.2em 0.6em; border-radius: 0.25em; }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 1rem auto;}
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useCallback } = React;
+        const API_BASE_URL = "http://127.0.0.1:8000/api";
 
-# 1. App Setup
-app = FastAPI(title="Account Digest")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
-)
+        function App() {
+            const [file, setFile] = useState(null);
+            const [docType, setDocType] = useState('contract');
+            const [status, setStatus] = useState('idle');
+            const [result, setResult] = useState(null);
+            const [error, setError] = useState('');
 
-# 2. Config and Storage
-load_dotenv()
-DO_API_TOKEN = os.environ.get("DO_API_TOKEN")
-DO_MODEL_ENDPOINT = os.environ.get("DO_MODEL_ENDPOINT")
-UPLOAD_DIR = "/tmp/pdf_uploads"
-PROMPTS_DIR = "prompts"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-job_storage = {}
+            const pollJobStatus = useCallback(async (id) => {
+                const response = await fetch(`${API_BASE_URL}/result/${id}`);
+                const data = await response.json();
+                if (data.status === 'complete') {
+                    setStatus('complete');
+                    setResult(data.result);
+                } else if (data.status === 'failed') {
+                    setStatus('error');
+                    setError(`Analysis failed: ${data.error}`);
+                } else {
+                    setTimeout(() => pollJobStatus(id), 2000);
+                }
+            }, []);
 
-# 3. Pydantic Models
-class AnalyzeRequest(BaseModel):
-    file_id: str
-    doc_type: str
+            const handleAnalyze = async () => {
+                if (!file) return;
+                setStatus('uploading');
+                setError('');
+                const formData = new FormData();
+                formData.append('file', file);
 
-# 4. Helper Functions
-def pdf_extract_text(path: str):
-    doc = fitz.open(path)
-    text = "".join(page.get_text() for page in doc)
-    if not text.strip(): raise ValueError("Could not extract text from PDF.")
-    return text
+                try {
+                    const uploadRes = await fetch(`${API_BASE_URL}/upload`, { method: 'POST', body: formData });
+                    if (!uploadRes.ok) throw new Error('File upload failed.');
+                    const uploadData = await uploadRes.json();
+                    
+                    setStatus('processing');
+                    const analyzeRes = await fetch(`${API_BASE_URL}/analyze`, {
+                     method: 'POST',
+                     headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file_id: uploadData.file_id, doc_type: docType })
+                    });
+                    if (!analyzeRes.ok) throw new Error('Failed to start analysis.');
+                    const analyzeData = await analyzeRes.json();
+                    pollJobStatus(analyzeData.job_id);
+                } catch (err) {
+                    setStatus('error');
+                    setError(err.message);
+                }
+            };
 
-def call_digital_ocean_ai(prompt: str):
-    if not DO_API_TOKEN or not DO_MODEL_ENDPOINT:
-        raise Exception("DigitalOcean credentials are not set in the .env file.")
-    
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {DO_API_TOKEN}"
-    }
-    
-    # This payload structure matches the DigitalOcean documentation
-    payload = {
-        "model": "n/a",
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
-    }
+            return (
+                <main className="container">
+                    <h1>📄 Account Digest</h1>
+                    {status === 'idle' || status === 'error' ? (
+                        <article>
+                            <div id="dropzone" onClick={() => document.getElementById('fileInput').click()}>
+                                {file ? `Selected: ${file.name}` : 'Drag & drop a PDF here, or click to select'}
+                            </div>
+                            <input type="file" id="fileInput" accept="application/pdf" style={{ display: 'none' }} onChange={(e) => setFile(e.target.files[0])} />
+                            <select value={docType} onChange={(e) => setDocType(e.target.value)}>
+                                <option value="contract">Contract</option>
+                                <option value="data_report">Data Report</option>
+                            </select>
+                            <button onClick={handleAnalyze} disabled={!file}>Analyze</button>
+                            {error && <p style={{ color: 'red' }}><strong>Error:</strong> {error}</p>}
+                        </article>
+                    ) : null}
 
-    print("--- Calling DigitalOcean AI Endpoint ---")
-    response = requests.post(DO_MODEL_ENDPOINT, headers=headers, json=payload)
-    
-    if response.status_code != 200:
-        raise Exception(f"API request failed with status {response.status_code}: {response.text}")
-        
-    response_data = response.json()
-    generated_text = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
-    return generated_text
+                    {status === 'processing' || status === 'uploading' ? (
+                        <article><div className="loader"></div><p style={{textAlign: 'center'}}>Analyzing...</p></article>
+                    ) : null}
 
-def run_analysis_task(job_id: str, file_path: str, doc_type: str):
-    try:
-        job_storage[job_id] = {"status": "processing", "step": "extracting_text"}
-        text = pdf_extract_text(file_path)
-        prompt_path = os.path.join(PROMPTS_DIR, f"{doc_type}_summary.md")
-        with open(prompt_path) as f:
-            prompt_template = f.read()
-        final_prompt = f"{prompt_template}\n\n--- DOCUMENT TEXT ---\n\n{text}"
-        job_storage[job_id]["step"] = "generating_summary"
-        summary = call_digital_ocean_ai(final_prompt)
-        result = {"summary_md": summary, "risks": []} # Risk analysis is simplified for now
-        job_storage[job_id] = {"status": "complete", "result": result}
-    except Exception as e:
-        job_storage[job_id] = {"status": "failed", "error": str(e)}
+                    {status === 'complete' && result ? (
+                        <article>
+                            <h2>Analysis Complete</h2>
+                            <h3>Summary</h3>
+                            <ul>
+                                {result.summary_md.split('-').filter(item => item.trim()).map((bullet, i) => <li key={i}>{bullet.trim()}</li>)}
+                                </ul>
+                            <h3>Risk Analysis</h3>
+                            <table>
+                                <thead><tr><th>Risk</th><th>Severity</th><th>Reason</th><th>Page</th></tr></thead>
+                                <tbody>
+                                    {result.risks.map((risk, i) => (
+                                        <tr key={i}>
+                                            <td>{risk.title}</td>
+                                            <td><span className={`severity-${risk.severity}`}>{risk.severity}</span></td>
+                                            <td>{risk.reason}</td>
+                                            <td>{risk.page}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </article>
+                    ) : null}
+                </main>
+            );
+        }
 
-# 5. API Endpoints
-@app.post("/api/upload")
-async def upload_pdf(file: UploadFile = File(...)):
-    file_id = str(uuid.uuid4())
-    file_path = os.path.join(UPLOAD_DIR, f"{file_id}.pdf")
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
-    return {"file_id": file_id}
-
-@app.post("/api/analyze")
-async def analyze_document(request: AnalyzeRequest, background_tasks: BackgroundTasks):
-    file_path = os.path.join(UPLOAD_DIR, f"{request.file_id}.pdf")
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found.")
-    job_id = request.file_id
-    job_storage[job_id] = {"status": "pending"}
-    background_tasks.add_task(run_analysis_task, job_id, file_path, request.doc_type)
-    return {"job_id": job_id}
-
-@app.get("/api/result/{job_id}")
-def get_result(job_id: str):
-    job = job_storage.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
-    return job
-
-# 6. Static Files (Serves the web/index.html file)
-app.mount("/", StaticFiles(directory="web", html=True), name="web")
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+    </script>
+</body>
+</html>
