@@ -77,7 +77,7 @@ def run_analysis_task(job_id: str, file_path: str, doc_type: str):
         final_prompt = f"{prompt_template}\n\n--- DOCUMENT TEXT ---\n\n{text}"
         job_storage[job_id]["step"] = "generating_summary"
         summary = call_digital_ocean_ai(final_prompt)
-        result = {"summary_md": summary, "risks": []}
+        result = {"summary_md": summary, "risks": []} # Risk analysis is simplified for now
         job_storage[job_id] = {"status": "complete", "result": result}
     except Exception as e:
         job_storage[job_id] = {"status": "failed", "error": str(e)}
@@ -108,5 +108,5 @@ def get_result(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found.")
     return job
 
-# 6. Static Files
+# 6. Static Files (Serves the web/index.html file)
 app.mount("/", StaticFiles(directory="web", html=True), name="web")
